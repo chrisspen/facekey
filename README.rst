@@ -34,7 +34,7 @@ via:
 
 Install script package:
 
-    pip install 
+    pip install https://github.com/chrisspen/facekey/zipball/master
 
 Usage
 -----
