@@ -13,11 +13,22 @@ class PyFaces:
         
         self.extn = extn
         self.egfnum = self.set_selected_eigenfaces_count(self.egfnum, extn)
-        print "number of eigenfaces used:",self.egfnum
+        #print "number of eigenfaces used:",self.egfnum
+    
+    def train(self):
+        """
+        Updates the eigenfaces cache.
+        """
+        self.facet.checkCache(
+            self.imgsdir,
+            self.extn,
+            self.imgnamelist,
+            self.egfnum,
+            self.threshold)
     
     def match(self, testimg):
         parts = os.path.basename(testimg).split('.')
-        extn=parts[len(parts) - 1]
+        extn = parts[len(parts) - 1]
         print "to match:",testimg," to all ",extn," images in directory:",self.imgsdir
         
         self.facet.checkCache(self.imgsdir,extn,self.imgnamelist,self.egfnum,self.threshold)

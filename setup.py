@@ -14,6 +14,7 @@ setup(
     #py_modules=['facekey'],
     packages=find_packages(),
     #install_requires=[],
+    #pil
     classifiers = [
         "Programming Language :: Python",
         "Development Status :: 3 - Alpha",

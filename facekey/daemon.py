@@ -15,7 +15,8 @@ class Daemon(object):
         stdin='/dev/null',
         stdout='/dev/null',
         stderr='/dev/null',
-        killsig=signal.SIGQUIT):
+        killsig=signal.SIGQUIT,
+        *args, **kwargs):
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr

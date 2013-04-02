@@ -21,6 +21,7 @@ class ImageError(Exception):
 
 class DirError(Exception):
     pass 
+
 class FaceBundle:
     def __init__(self,imglist,wd,ht,adjfaces,fspace,avgvals,evals):
         self.imglist=imglist
@@ -31,25 +32,25 @@ class FaceBundle:
         self.avgvals=avgvals
         self.evals=evals
         
-class FaceRec:    
-    def validateselectedimage(self,imgname):                     
+class FaceRec:
+    def validateselectedimage(self,imgname):
         selectimg=imageops.XImage(imgname)
         selectwdth=selectimg._width
-        selectht=selectimg._height        
+        selectht=selectimg._height
         if((selectwdth!=self.bundle.wd) or (selectht!=self.bundle.ht)):
             raise ImageError("select image of correct size !")
         else:
             return selectimg
         
-    def findmatchingimage(self,imagename,selectedfacesnum,thresholdvalue):        
+    def findmatchingimage(self,imagename,selectedfacesnum,thresholdvalue):
         selectimg=self.validateselectedimage(imagename)
         inputfacepixels=selectimg._pixellist
         inputface=asfarray(inputfacepixels)
         pixlistmax=max(inputface)
-        inputfacen=inputface/pixlistmax        
+        inputfacen=inputface/pixlistmax
         inputface=inputfacen-self.bundle.avgvals
         usub=self.bundle.eigenfaces[:selectedfacesnum,:]
-        input_wk=dot(usub,inputface.transpose()).transpose()        
+        input_wk=dot(usub,inputface.transpose()).transpose()
         dist = ((self.weights-input_wk)**2).sum(axis=1)
         idx = argmin(dist)
         mindist=sqrt(dist[idx])
@@ -206,10 +207,10 @@ class FaceRec:
                 print 'both sets same'
                 cache_changed=False
                 eigenfaces=self.bundle.eigenfaces
-                adjfaces=self.bundle.adjfaces                             
+                adjfaces=self.bundle.adjfaces
                 self.weights=self.calculateWeights(eigenfaces,adjfaces,selectedfacesnum);
             if(cache_changed):
-                print "folder changed!!"                
+                print "folder changed!!!"
                 self.doCalculations(dir,imglist,selectedfacesnum)
             f.close()
             
