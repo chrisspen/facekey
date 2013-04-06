@@ -119,7 +119,8 @@ class FaceRec:
         #create average values ,one for each column(ie pixel)        
         avgvals=average(facemat,axis=0)        
         #make average faceimage in currentdir just for fun viewing..
-        imageops.make_image(avgvals,"average.png",(imgwdth,imght))
+        #imageops.make_image(avgvals,"average.png",(imgwdth,imght))
+        
         #substract avg val from each orig val to get adjusted faces(phi of T&P)     
         adjfaces=facemat-avgvals        
                 

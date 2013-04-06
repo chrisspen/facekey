@@ -10,6 +10,7 @@ __version__ = '.'.join(map(str, VERSION))
 import atexit
 import datetime
 import csv
+import commands
 import os
 import re
 import sys
@@ -22,15 +23,15 @@ from collections import namedtuple
 
 LOG = logging.getLogger(__name__)
 
-import dbus
-import dbus.decorators
-import dbus.mainloop.glib
-dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+#import dbus
+#import dbus.decorators
+#import dbus.mainloop.glib
+#dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-import gobject
+#import gobject
 # Necessary to prevent Python threads from freezing due to the GIL
 # when gobject blocks while making system calls.
-gobject.threads_init()
+#gobject.threads_init()
 
 try:
     import cv
@@ -44,10 +45,18 @@ import pyfaces
 
 import constants as c
 
+print_lock = threading.Lock()
+
+def print_(*args):
+    print_lock.acquire()
+    try:
+        print>>sys.stderr, ' '.join(str(_) for _ in args)
+    finally:
+        print_lock.release()
+
 class FaceKey(Daemon):
     
     def __init__(self,
-        key_name='system-owner',
         gui=False,
         opencv_dir=c.OPENCV_DIR,
         cascade=c.DEFAULT_CASCADE,
@@ -60,12 +69,19 @@ class FaceKey(Daemon):
         
         super(FaceKey, self).__init__(*args, **kwargs)
         
+        # Reference to an image asynchronously captured from a video stream.
+        self._capture_image_fresh = False
+        self._capture_image = None
+        self._face = None
+        self._capture_lock = threading.Lock()
+        self.capture_being_identified = False
+        
         self.loop = None
         self._cam_thread = None
         atexit.register(self._atexit)
         
         self.unknown_threshold = float(unknown_threshold)
-        self.locked = False
+        #self.locked = False
         self.gui = gui
         self.images_dir = images_dir
         
@@ -86,7 +102,6 @@ class FaceKey(Daemon):
         assert os.path.isfile(self.cascade), \
             "Face cascade file %s does not exist." % (self.cascade,)
         self.face_cascade = cv.Load(self.cascade)
-        self.key_name = key_name
         
         # Configure PyFaces.
         self.pyf = None
@@ -96,17 +111,18 @@ class FaceKey(Daemon):
         
         # Configure camera monitoring thread.
         self._monitoring_camera = True
-        self._cam_thread = threading.Thread(target=self._monitor_cam, args=())
-        self._cam_thread.setDaemon(True)
+        self._cam_thread = None#threading.Thread(target=self._monitor_cam)
+        #self._cam_thread.daemon = True
+        self.monitor_cam_running = False
         
         # Configure dbus.
-        bus = self.bus = dbus.SessionBus()
-        try:
-            screensaver = self.screensaver = bus.get_object('org.gnome.ScreenSaver','/org/gnome/ScreenSaver')
-            screensaver.connect_to_signal('ActiveChanged', self._on_screensaver_change)
-        except dbus.DBusException:
-            traceback.print_exc()
-            sys.exit(1)
+#        bus = self.bus = dbus.SessionBus()
+#        try:
+#            screensaver = self.screensaver = bus.get_object('org.gnome.ScreenSaver','/org/gnome/ScreenSaver')
+#            screensaver.connect_to_signal('ActiveChanged', self._on_screensaver_change)
+#        except dbus.DBusException:
+#            traceback.print_exc()
+#            sys.exit(1)
     
     def init_pyfaces(self):
         self.pyf = pyfaces.PyFaces(
@@ -116,9 +132,24 @@ class FaceKey(Daemon):
             extn='png')
     
     @property
+    def unlockers(self):
+        unlockers_fn = os.path.join(self.images_dir, 'unlockers')
+        if os.path.isfile(unlockers_fn):
+            return [
+                _.strip()
+                for _ in open(unlockers_fn, 'r').read().split('\n')
+                if _.strip()
+            ]
+        else:
+            return []
+    
+    @property
     def has_training(self):
+        unlockers = self.unlockers
         for fn in os.listdir(os.path.join(self.images_dir, 'gallery')):
-            if self.key_name in fn:
+            name = re.sub('(?:[^a-zA-Z0-9]+)?[0-9]+\.[a-zA-Z]+', '', fn)
+            #print fn, name
+            if name in unlockers:
                 return True
         return False
     
@@ -128,10 +159,16 @@ class FaceKey(Daemon):
         if self.loop:
             self.loop.quit()
 
-    def classify(self, *args):
+    def classify(self, files=None, realtime=False, only_when_locked=False):
         """
         Iterates over each argument and looks up the closest image match,
         """
+        print 'classify'
+        if realtime:
+            self.gui = True
+            for _ in self._monitor_cam(only_when_locked=only_when_locked):
+                yield _
+            return
         
         def classify_image(fqfn):
             matches = self.image_extensions.findall(fqfn)
@@ -141,7 +178,7 @@ class FaceKey(Daemon):
             for face in self._iter_face_names(fqfn):
                 yield face
         
-        for path in args:
+        for path in files:
             if os.path.isdir(path):
                 for dirpath, dirname, files in os.walk(path):
                     for fn in sorted(files):
@@ -284,7 +321,7 @@ class FaceKey(Daemon):
         #grayscale = cv.CreateImage(image_size, 8, 1)
         #cv.CvtColor(image, grayscale, cv.CV_BGR2GRAY)
         #cv.EqualizeHist(grayscale, grayscale)
-        #_image = image
+        _image = image
         #image = grayscale
         
 #        t0 = time.time()
@@ -299,7 +336,7 @@ class FaceKey(Daemon):
         if faces:
             #print 'Face detected!'
             for face in faces:
-                #print 'face:',face
+                #print_('iter_face_names.face:',face)
                 rect, neighbors = face
                 _x, _y, _width, _height = rect
                 height = _height
@@ -326,99 +363,238 @@ class FaceKey(Daemon):
                     self.saved_images += 1
                     
                     # Identify face.
+                    print_('Identifying...')
                     t0 = time.time()
                     name, match_dist = self.pyf.match_name(fqfn)
                     t1 = time.time() - t0
-#                    print 'pyfaces secs:',t1
+                    #print_('Pyfaces secs:',t1)
                     if name:
-#                        print '-'*80
-#                        print 'RECOGNIZED:',name
+                        #print_('-'*80)
                         name = re.sub('[^a-zA-Z0-9]+$', '', name)
+                        print_('RECOGNIZED:', name, 'seconds:', t1)
                         face_obj = Face(fqfn0, x, y, width, height, name, match_dist)
                         yield face_obj
-#                    else:
+                    else:
 #                        print '-'*80
-#                        print 'NO RECOGNITION'
+                        print_('UNRECOGNIZED', 'seconds:', t1)
                     #os.remove(fqfn)
                 else:
-                    print>>sys.stderr, 'Ignoring too small face at %i %i %ix%i.' % (x, y, width, height)
+                    print_('Ignoring too small face at %i %i %ix%i.' % (x, y, width, height))
                 
                 # Indicate area containing face.
+                #TODO:fix
+#                if self.gui:
+#                    cv.Rectangle(image, (x,y), (x+width,y+height), cv.RGB(255,0,0))
+    
+    def set_capture_image(self, image):
+        self._capture_lock.acquire()
+        try:
+            self._capture_image_fresh = True
+            self._capture_image = image
+        finally:
+            self._capture_lock.release()
+        
+    def get_capture_image(self):
+        self._capture_lock.acquire()
+        try:
+            self._capture_image_fresh = False
+            return self._capture_image
+        finally:
+            self._capture_lock.release()
+    
+    def set_face(self, face):
+        self._capture_lock.acquire()
+        try:
+            self._face = face
+        finally:
+            self._capture_lock.release()
+        
+    def get_face(self):
+        self._capture_lock.acquire()
+        try:
+            return self._face
+        finally:
+            self._capture_lock.release()
+    
+    @property
+    def capture_image_fresh(self):
+        return self._capture_image_fresh
+    
+    def _monitor_cam(self, only_when_locked=True):
+        """
+        Attempts to detect and identify faces in a live video stream
+        from a locally attached webcam.
+        """
+        parent_self = self
+        self.monitor_cam_running = True
+        
+        print 'Monitor cam thread started.'
+        
+        class CamThread(threading.Thread):
+            """
+            Asynchronously captures web cam frames.
+            """
+            
+            stop = False
+            
+            def run(self):
+                _self = self
+                self = parent_self
+
+                # Create windows.
                 if self.gui:
-                    cv.Rectangle(_image, (x,y), (x+width,y+height), cv.RGB(255,0,0))
-    
-    def _monitor_cam(self):
+                    cv.NamedWindow('Camera', cv.CV_WINDOW_AUTOSIZE)
+                    
+                # Create capture device.
+                device = 0 # assume we want first device
+                capture = cv.CreateCameraCapture(0)
+                w,h = 640,480
+                #w,h = 320,240
+                cv.SetCaptureProperty(capture, cv.CV_CAP_PROP_FRAME_WIDTH, w)
+                cv.SetCaptureProperty(capture, cv.CV_CAP_PROP_FRAME_HEIGHT, h)
+             
+                # Check if capture device is OK.
+                if not capture:
+                    print_("Error opening capture device")
+                    #sys.exit(1)
+                    return
+                
+                print_('Monitoring camera...')
+                print_('Press ESC to exit.')
+                delay_ms = 100
+                while not _self.stop and self._monitoring_camera:
+                    frame = None
+                    
+                    if only_when_locked and not self.locked:
+                        print_('Not locked. Sleeping.')
+                        time.sleep(1)
+                        continue
+             
+                    # Capture an image from the camera.
+                    frame = cv.QueryFrame(capture)
+                    if frame is None:
+                        break
+                    cv.Flip(frame, None, 1)
+             
+                    if not self.capture_being_identified:
+                        self.set_capture_image(frame)
+             
+                    # Display webcam image.
+                    if self.gui:
+                        if frame:
+                            face = self.get_face()
+                            if face:
+                                cv.Rectangle(
+                                    frame,
+                                    (face.x,face.y),
+                                    (face.x+face.width,face.y+face.height),
+                                    cv.RGB(255,0,0)
+                                )
+                            cv.ShowImage('Camera', frame)
+                 
+                        # handle events
+                        k = cv.WaitKey(delay_ms)
+                 
+                        if k == 0x1b: # ESC
+                            print_('ESC pressed. Exiting...')
+                            break
+                    else:
+                        time.sleep(delay_ms*1/1000.)
         
-        # Create windows.
-        if self.gui:
-            cv.NamedWindow('Camera', cv.CV_WINDOW_AUTOSIZE)
-     
-        # Create capture device.
-        device = 0 # assume we want first device
-        capture = cv.CreateCameraCapture(0)
-        w,h = 640,480
-        #w,h = 320,240
-        cv.SetCaptureProperty(capture, cv.CV_CAP_PROP_FRAME_WIDTH, w)
-        cv.SetCaptureProperty(capture, cv.CV_CAP_PROP_FRAME_HEIGHT, h)
-     
-        # Check if capture device is OK.
-        if not capture:
-            print "Error opening capture device"
-            sys.exit(1)
-        
-        print "Monitoring camera..."
-        while self._monitoring_camera:
-            if not self.locked:
-#                print 'Not locked. Sleeping.'
-                time.sleep(1)
-                continue
-     
-            # Capture an image from the camera.
-            frame = cv.QueryFrame(capture)
-            if frame is None:
-                break
-            cv.Flip(frame, None, 1)
-     
-            # Detect and recognize faces.
-            faces_found = False
-            for name in self._iter_face_names(frame):
-                faces_found = True
-                if name == self.key_name:
-                    self.unlock()
-            if faces_found:
-                time.sleep(1)
-     
-            # Display webcam image.
-            if self.gui:
-                cv.ShowImage('Camera', frame)
-         
-                # handle events
-                delay_ms=1
-                k = cv.WaitKey(delay_ms)
-         
-                if k == 0x1b: # ESC
-                    print 'ESC pressed. Exiting ...'
+        class DetectThread(threading.Thread):
+            """
+            Asynchronously detects faces in captured web cam frames.
+            """
+            
+            stop = False
+            
+            def run(self):
+                _self = self
+                self = parent_self
+                while not _self.stop:
+                    if self.capture_image_fresh:
+                        self.capture_being_identified = True
+                        #print_('Fresh face found!')
+                        # Detect and recognize faces.
+                        frame = self.get_capture_image()
+                        for face in self._iter_face_names(frame):
+                            self.set_face(face)
+                            print_('Found name:',face)
+                            if face.name in self.unlockers:
+                                self.unlock()
+                        else:
+                            print_('No faces found.')
+                    else:
+                        time.sleep(1)
+                    self.capture_being_identified = False
+        try:
+            cam_thread = CamThread()
+            cam_thread.daemon = True
+            cam_thread.start()
+            
+            detect_thread = DetectThread()
+            detect_thread.daemon = True
+            detect_thread.start()
+            
+            while 1:
+                if not cam_thread.is_alive():
                     break
+                time.sleep(1)
+                yield
+            
+            detect_thread.stop = True
+            #detect_thread.join()
+            
+        finally:
+            self.monitor_cam_running = False
     
-    def _on_screensaver_change(self, locked):
-        self.locked = bool(locked)
-        if self.locked:
-            self.last_datetime_locked = datetime.datetime.now()
-            #TODO:delay autounlock after N seconds
+#    def _on_screensaver_change(self, locked):
+#        locked_name = 'locked' if locked else 'unlocked'
+#        print 'Screensaver changed to %s.' % (locked_name,)
+#        self.locked = bool(locked)
+#        if self.locked:
+#            self.last_datetime_locked = datetime.datetime.now()
+#            #TODO:delay autounlock after N seconds
     
     def run(self):
         assert self.has_training, \
             ("No training images detected. Please run `%s train` to train " +
              "the script to recognize your face.") % (__file__)
-        self._cam_thread.start()
-        print "Monitoring screensaver..."
-        loop = self.loop = gobject.MainLoop()
-        loop.run()
+        self.gui = False
+        for _ in self.classify(realtime=True, only_when_locked=True):
+            #print 'realtime:',_
+            pass
+        return
+            
+#        self._cam_thread = threading.Thread(target=self._monitor_cam)
+#        self._cam_thread.daemon = True
+#        self._cam_thread.start()
+        
+#        while 1:
+#            if self.monitor_cam_running:
+#                break
+#            print 'Waiting for monitor cam thread to start...', self._cam_thread.isAlive()
+#            time.sleep(1)
+            
+#        print "Monitoring screensaver..."
+#        loop = self.loop = gobject.MainLoop()
+#        loop.run()
+#        self._cam_thread.join()
+    
+    @property
+    def locked(self):
+        output = commands.getoutput('DISPLAY=:0 gnome-screensaver-command -q')
+        return not ('inactive' in output)
+    
+    def lock(self):
+        #self.screensaver.SetActive(True)
+        output = commands.getoutput('DISPLAY=:0 gnome-screensaver-command -l')
     
     def unlock(self):
         if not self.locked:
             return
-        self.screensaver.SetActive(False)
+        #self.screensaver.SetActive(False)
+        output = commands.getoutput('DISPLAY=:0 gnome-screensaver-command -d')
 
 if __name__ == "__main__":
     from optparse import OptionParser
@@ -529,17 +705,24 @@ Actions:
     elif action == c.UNINSTALL:
         todo
     elif action == c.CLASSIFY:
-        headers='filename,x,y,width,height,name,dist'.split(',')
-        print>>sys.stdout, ','.join(headers)
-        dw = csv.DictWriter(sys.stdout, headers)
-        for _ in daemon.classify(*args[1:]):
-            name = _.name
-#            print _.dist, daemon.unknown_threshold, _.dist > daemon.unknown_threshold
-            if _.dist > daemon.unknown_threshold:
-                name = c.UNKNOWN
-            dw.writerow(dict(zip(
-                headers,
-                (_.filename, _.x, _.y, _.width, _.height, name, _.dist))))
-            
-    sys.exit(0)
-    
+        realtime = options.realtime
+        if realtime:
+            #print 'realtime'
+            for _ in daemon.classify(realtime=True):
+                #print 'realtime:',_
+                pass
+        else:
+            headers='filename,x,y,width,height,name,dist'.split(',')
+            print>>sys.stdout, ','.join(headers)
+            dw = csv.DictWriter(sys.stdout, headers)
+            for _ in daemon.classify(files=args[1:]):
+                name = _.name
+    #            print _.dist, daemon.unknown_threshold, _.dist > daemon.unknown_threshold
+                if _.dist > daemon.unknown_threshold:
+                    name = c.UNKNOWN
+                dw.writerow(dict(zip(
+                    headers,
+                    (_.filename, _.x, _.y, _.width, _.height, name, _.dist))))
+                
+        sys.exit(0)
+        
