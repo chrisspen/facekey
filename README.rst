@@ -112,7 +112,7 @@ Lock your desktop, then position your face infront of your webcam and wait. Afte
 
 If it is not unlocked, that means the webcam wasn't able to detect a face in the video stream, or was able to detect a face, by mis-classified it as someone else.
 
-Check your ~/.facekey/probes folder. Unknown face images will be placed in this folder. Locate images of you and process them according to the tagging and training steps.
+Check your ~/.facekey/probes folder. Captured face images will be placed in this folder. Locate images of you and process them according to the tagging and training steps.
 
 Once you're comfortable with the performance and accuracy of the script, you can install it to run automatically via:
 
@@ -121,10 +121,31 @@ Once you're comfortable with the performance and accuracy of the script, you can
 Caveats
 -------
 
-When classifying faces, it can be difficult to detect an unknown face. The algorithm works by finding the known face that is the most similar
-to the unknown face. The metric of similarity is known as the "distance". A distance of 0 indicates a perfect match to a known face.
-A large distance indicates a less known face. You could classify a face as "unknown" if this distance is above some threshold.
-However, what threshold is appropriate for your images depends largely on what images you've already trained and the images being classified.
+1. Detecting the unknown
 
-One way to determine this threshold is to download faces of random people that definitely should not be recognized, and run the classify command,
+When classifying faces, it can be difficult to detect an unknown face.
+The algorithm works by finding the known face that is the most similar
+to the detected face. The metric of similarity is known as the "distance".
+A distance of 0 indicates a perfect match to a known face.
+A large distance indicates a less known face.
+We classify a face as "unknown" if this distance is above some threshold.
+However, what threshold is appropriate for your images depends largely on
+what images you've already trained and the images being classified.
+
+One way to determine this threshold is to download faces of random people
+that definitely should not be recognized, run the classify command,
 and then use the average or minimum distance as the known/unknown threshold.
+
+2. Slow performance
+
+The bulk of the Eigenfaces algorithm uses Numpy to improve speed.
+Unfortunately, detection and classification of a face can still be painfully
+slow. Testing on my personal machine took on average 7 seconds to recognize my
+face and unlock my desktop. Depending on your needs and your system's speed,
+this may be unusably slow.
+
+At some point I'd like to replace the Python/Numpy Eigenfaces implementation
+with the pure `C++ implementation in OpenCV
+http://docs.opencv.org/modules/contrib/doc/facerec/facerec_tutorial.html#eigenfaces`_.
+However, as of this authoring, that implementation, and its Python bindings,
+are still incomplete. 

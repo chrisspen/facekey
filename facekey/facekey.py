@@ -4,7 +4,7 @@
 A simple script to monitor the webcam while the machine is locked, and
 automatically unlock when the user's face is detected.
 """
-VERSION = (0, 1, 1)
+VERSION = (0, 1, 2)
 __version__ = '.'.join(map(str, VERSION))
 
 import atexit
@@ -75,6 +75,7 @@ class FaceKey(Daemon):
         self._face = None
         self._capture_lock = threading.Lock()
         self.capture_being_identified = False
+        self.show_face_rect = True
         
         self.loop = None
         self._cam_thread = None
@@ -363,7 +364,7 @@ class FaceKey(Daemon):
                     self.saved_images += 1
                     
                     # Identify face.
-                    print_('Identifying...')
+                    print_('Identifying %s...' % (fqfn,))
                     t0 = time.time()
                     name, match_dist = self.pyf.match_name(fqfn)
                     t1 = time.time() - t0
@@ -483,7 +484,7 @@ class FaceKey(Daemon):
                     if self.gui:
                         if frame:
                             face = self.get_face()
-                            if face:
+                            if face and self.show_face_rect:
                                 cv.Rectangle(
                                     frame,
                                     (face.x,face.y),
@@ -557,10 +558,15 @@ class FaceKey(Daemon):
 #            #TODO:delay autounlock after N seconds
     
     def run(self):
+        unlockers_fn = os.path.join(self.images_dir, 'unlockers')
+        assert self.unlockers, \
+            ("No unlockers are specified. Add names of one or more " +
+             "unlockers to %s.") % (unlockers_fn,)
         assert self.has_training, \
             ("No training images detected. Please run `%s train` to train " +
              "the script to recognize your face.") % (__file__)
         self.gui = False
+        self.show_face_rect = False
         for _ in self.classify(realtime=True, only_when_locked=True):
             #print 'realtime:',_
             pass
