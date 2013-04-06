@@ -29,23 +29,25 @@ class PyFaces:
     def match(self, testimg):
         parts = os.path.basename(testimg).split('.')
         extn = parts[len(parts) - 1]
-        print "to match:",testimg," to all ",extn," images in directory:",self.imgsdir
+        #print "to match:",testimg," to all ",extn," images in directory:",self.imgsdir
         
         self.facet.checkCache(self.imgsdir,extn,self.imgnamelist,self.egfnum,self.threshold)
         mindist,matchfile = self.facet.findmatchingimage(testimg,self.egfnum,self.threshold)
         if mindist < 1e-10:
             mindist=0
         if matchfile:
-            print "matches :"+matchfile+" dist :"+str(mindist)
+            #print "matches :"+matchfile+" dist :"+str(mindist)
             return matchfile,mindist
-        else:
-            print "NOMATCH! try higher threshold"
+#        else:
+#            print "NOMATCH! try higher threshold"
     
     def match_name(self, testimg):
         matchfile,matchdist = self.match(testimg)
+        #print>>sys.stderr, matchfile,matchdist
         match = re.findall("[a-zA-Z_\-]+", os.path.splitext(os.path.split(matchfile)[1])[0])
         if match:
-            return match[0]
+            return match[0], matchdist
+        return None, None
     
     def set_selected_eigenfaces_count(self,selected_eigenfaces_count,ext):
         #call eigenfaces.parsefolder() and get imagenamelist
@@ -55,22 +57,3 @@ class PyFaces:
             selected_eigenfaces_count=numimgs/2
         return selected_eigenfaces_count
         
-##if __name__ == "__main__":
-##    import time
-##    try:
-##        start = time.time()
-##        argsnum=len(sys.argv)
-##        print "args:",argsnum
-##        if(argsnum<5):
-##            print "usage:python pyfaces.py imgname dirname numofeigenfaces threshold "
-##            sys.exit(2)                
-##        imgname=sys.argv[1]
-##        dirname=sys.argv[2]
-##        egfaces=int(sys.argv[3])
-##        thrshld=float(sys.argv[4])
-##        pyf=PyFaces(imgname,dirname,egfaces,thrshld)
-##        end = time.time()
-##        print 'took :',(end-start),'secs'
-##    except Exception,detail:
-##        print detail.args
-##        print "usage:python pyfaces.py imgname dirname numofeigenfaces threshold "

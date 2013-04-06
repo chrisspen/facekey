@@ -62,13 +62,15 @@ A few notes:
 
 Step 2: Tag images.
 
-You should now have several images in your <base_image_dir>/pending folder.
+You should now have several images in your ~/.facekey/pending folder.
 Manually review each one, and rename it with a unique identifier corresponding to the person's name. (e.g. an image of "Bob Jones" should be renamed something like "bobjones.png")
 Delete images that:
+
 * Do not contain a person's entire face.
 * Are of poor quality (blurry, grainy, dark, low contrast, etc). Shadows or slight angles are fine.
+
 Denote images of the same person with an incrementing index (e.g. bobjones1.png, bobjones2.png, bobjones3.png, etc).
-Then copy these images into your <base_image_dir>/gallery.
+Then copy these images into your ~/.facekey/gallery.
 
 Step 3: Train classifier.
 
@@ -76,7 +78,7 @@ Now that we have a large collection of tagged images, we need to train our Eigen
 
     facekey.py train
 
-Step 4: Test classifier.
+Step 4: Test classifier. *incomplete*
 
 Assuming everything has worked correctly, the classifier should now be able to recognize your face. Ensure you have a webcam attached and run:
 
@@ -84,13 +86,45 @@ Assuming everything has worked correctly, the classifier should now be able to r
 
 You should now see a small GUI window showing your webcam video feed. If your face is detected in the feed, it should be outlined with a colored box labeled with your name.
 
-Step 5: Tag images.
+Step 5: Classify images.
 
 You can also use this script from the command line to detect and identify faces in untagged images by running:
 
     facekey.py classify <image directory>
+    
+Or classify one of more specific images with:
+
+    facekey.py classify <image1> <image2> ... <imageN>
 
 Detected faces will be displayed to standard output in the following CSV format:
 
-    filename,x,y,width,height,name
+    filename,x,y,width,height,name,dist
+
+Step 6: Unlock desktop. *incomplete*
+
+Specify the name you used to identify your own images in ~/.facekey/unlockers.
+
+Then run:
+
+    facekey.py run
     
+Lock your desktop, then position your face infront of your webcam and wait. After a few seconds, your desktop should become unlocked.
+
+If it is not unlocked, that means the webcam wasn't able to detect a face in the video stream, or was able to detect a face, by mis-classified it as someone else.
+
+Check your ~/.facekey/probes folder. Unknown face images will be placed in this folder. Locate images of you and process them according to the tagging and training steps.
+
+Once you're comfortable with the performance and accuracy of the script, you can install it to run automatically via:
+
+    facekey.py install
+    
+Caveats
+-------
+
+When classifying faces, it can be difficult to detect an unknown face. The algorithm works by finding the known face that is the most similar
+to the unknown face. The metric of similarity is known as the "distance". A distance of 0 indicates a perfect match to a known face.
+A large distance indicates a less known face. You could classify a face as "unknown" if this distance is above some threshold.
+However, what threshold is appropriate for your images depends largely on what images you've already trained and the images being classified.
+
+One way to determine this threshold is to download faces of random people that definitely should not be recognized, and run the classify command,
+and then use the average or minimum distance as the known/unknown threshold.

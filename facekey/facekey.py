@@ -9,12 +9,18 @@ __version__ = '.'.join(map(str, VERSION))
 
 import atexit
 import datetime
+import csv
 import os
 import re
 import sys
+import shutil
 import time
 import threading
 import traceback
+import logging
+from collections import namedtuple
+
+LOG = logging.getLogger(__name__)
 
 import dbus
 import dbus.decorators
@@ -36,46 +42,18 @@ except ImportError, e:
 from daemon import Daemon
 import pyfaces
 
-ACTIONS = (
-    COLLECT,
-    INSTALL,
-    UNINSTALL,
-    TRAIN,
-    START,
-    STOP,
-    RESTART,
-    RUN,
-) = (
-    'collect',
-    'install',
-    'uninstall',
-    'train',
-    'start',
-    'stop',
-    'restart',
-    'run',
-)
-DEFAULT_ACTION = START
-DEFAULT_PIDFILE = '/tmp/facekey.pid'
-
-OPENCV_DIR = os.environ.get(
-    'FACEKEY_OPENCV_DIR', '/usr/local/share/OpenCV')
-DEFAULT_CASCADE = os.environ.get(
-    'FACEKEY_FACE_HAAR', 'haarcascades/haarcascade_frontalface_alt.xml')
-DEFAULT_IMAGES_DIR = os.environ.get(
-    'FACEKEY_IMAGES_DIR', os.path.join(os.path.dirname(__file__), 'images'))
-
-DEFAULT_IMAGE_EXTENSIONS = '.jpg,.png'
+import constants as c
 
 class FaceKey(Daemon):
     
     def __init__(self,
         key_name='system-owner',
         gui=False,
-        opencv_dir=OPENCV_DIR,
-        cascade=DEFAULT_CASCADE,
-        images_dir=DEFAULT_IMAGES_DIR,
-        image_extensions=DEFAULT_IMAGE_EXTENSIONS,
+        opencv_dir=c.OPENCV_DIR,
+        cascade=c.DEFAULT_CASCADE,
+        images_dir=c.DEFAULT_IMAGES_DIR,
+        image_extensions=c.DEFAULT_IMAGE_EXTENSIONS,
+        unknown_threshold=c.DEFAULT_UNKNOWN_THRESHOLD,
         eigen_faces=6,
         eigen_threshold=3,
         *args, **kwargs):
@@ -86,6 +64,7 @@ class FaceKey(Daemon):
         self._cam_thread = None
         atexit.register(self._atexit)
         
+        self.unknown_threshold = float(unknown_threshold)
         self.locked = False
         self.gui = gui
         self.images_dir = images_dir
@@ -100,7 +79,7 @@ class FaceKey(Daemon):
         self.target_width = 125
         self.target_height = 150
         self.saved_images = 0
-        self.base = OPENCV_DIR
+        self.base = c.OPENCV_DIR
         assert os.path.isdir(self.base), \
             "Base OpenCV directory %s does not exist." % (self.base,)
         self.cascade = os.path.join(self.base, cascade)
@@ -148,6 +127,31 @@ class FaceKey(Daemon):
             self._monitoring_camera = False
         if self.loop:
             self.loop.quit()
+
+    def classify(self, *args):
+        """
+        Iterates over each argument and looks up the closest image match,
+        """
+        
+        def classify_image(fqfn):
+            matches = self.image_extensions.findall(fqfn)
+            if not matches:
+                return
+            print>>sys.stderr, 'Classifying %s...' % fqfn
+            for face in self._iter_face_names(fqfn):
+                yield face
+        
+        for path in args:
+            if os.path.isdir(path):
+                for dirpath, dirname, files in os.walk(path):
+                    for fn in sorted(files):
+                        fqfn = os.path.join(dirpath, fn)
+                        for _ in classify_image(fqfn):
+                            yield _
+            elif os.path.isfile(path):
+                fqfn = os.path.abspath(path)
+                for _ in classify_image(fqfn):
+                    yield _
 
     def collect(self, start_dir, recurse=True):
         """
@@ -231,6 +235,9 @@ class FaceKey(Daemon):
         print '%i good faces found.' % good_faces_found
 
     def detect(self, image):
+        """
+        Determines the location of one or more faces in the given image.
+        """
         if isinstance(image, basestring):
             image = cv.LoadImage(image)
         
@@ -243,13 +250,21 @@ class FaceKey(Daemon):
         _image = image
         image = grayscale
         
+        # Assume an image equal to the target size contains a single face.
+        target_size = (self.target_width, self.target_height)
+        if image_size == target_size:
+            rect = 0, 0, self.target_width, self.target_height
+            neighbors = None
+            return [(rect, neighbors)], image
+        
+        # Locate one or more faces in the image.
         t0 = time.time()
         faces = cv.HaarDetectObjects(
             image, 
             self.face_cascade,
             cv.CreateMemStorage(0), 1.2, 2, 0, (20, 20))
         t1 = time.time() - t0
-        print 'Haar detect took %.2f seconds.' % (t1,)
+        LOG.info('Haar detect took %.2f seconds.' % (t1,))
         return faces, image
 
     def _iter_face_names(self, image):
@@ -257,14 +272,20 @@ class FaceKey(Daemon):
         Detects faces in the image and attempts to identify them.
         Returns a generator iterating over all names of identified faces.
         """
+        
+        fqfn0 = None
+        if isinstance(image, basestring):
+            fqfn0 = image
+        
+        Face = namedtuple('Face', ('filename', 'x', 'y', 'width', 'height', 'name', 'dist'))
     
         # Convert to grayscale.
-        image_size = cv.GetSize(image)
-        grayscale = cv.CreateImage(image_size, 8, 1)
-        cv.CvtColor(image, grayscale, cv.CV_BGR2GRAY)
+        #image_size = cv.GetSize(image)
+        #grayscale = cv.CreateImage(image_size, 8, 1)
+        #cv.CvtColor(image, grayscale, cv.CV_BGR2GRAY)
         #cv.EqualizeHist(grayscale, grayscale)
-        _image = image
-        image = grayscale
+        #_image = image
+        #image = grayscale
         
 #        t0 = time.time()
 #        faces = cv.HaarDetectObjects(
@@ -273,13 +294,13 @@ class FaceKey(Daemon):
 #            cv.CreateMemStorage(0), 1.2, 2, 0, (20, 20))
 #        t1 = time.time() - t0
 #        print 'haar secs:',t1
-        faces = self.detect(image)
+        faces, image = self.detect(image)
      
         if faces:
-            print 'Face detected!'
+            #print 'Face detected!'
             for face in faces:
-                
-                rect,neighbors = face
+                #print 'face:',face
+                rect, neighbors = face
                 _x, _y, _width, _height = rect
                 height = _height
                 width = cv.Round(self.target_width/float(self.target_height)*height)
@@ -306,17 +327,21 @@ class FaceKey(Daemon):
                     
                     # Identify face.
                     t0 = time.time()
-                    name = self.pyf.match_name(fqfn)
+                    name, match_dist = self.pyf.match_name(fqfn)
                     t1 = time.time() - t0
-                    print 'pyfaces secs:',t1
+#                    print 'pyfaces secs:',t1
                     if name:
-                        print '-'*80
-                        print 'RECOGNIZED:',name
-                        yield name
-                    else:
-                        print '-'*80
-                        print 'NO RECOGNITION'
+#                        print '-'*80
+#                        print 'RECOGNIZED:',name
+                        name = re.sub('[^a-zA-Z0-9]+$', '', name)
+                        face_obj = Face(fqfn0, x, y, width, height, name, match_dist)
+                        yield face_obj
+#                    else:
+#                        print '-'*80
+#                        print 'NO RECOGNITION'
                     #os.remove(fqfn)
+                else:
+                    print>>sys.stderr, 'Ignoring too small face at %i %i %ix%i.' % (x, y, width, height)
                 
                 # Indicate area containing face.
                 if self.gui:
@@ -395,24 +420,15 @@ class FaceKey(Daemon):
             return
         self.screensaver.SetActive(False)
 
-#    if action == INSTALL:
-#        todo
-#        # Copy symlink to /etc/init.d
-#    elif action == TRAIN:
-#        todo
-#        # Record several images from webcam of user and save to gallery/system-owner%i.png.
-#    elif action == DAEMON:
-#        print 'daemon'
-#        fk = FaceKey()
-#        with daemon.DaemonContext(stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr):
-#            print 'daemon ctx'
-#            fk.run()
-
 if __name__ == "__main__":
     from optparse import OptionParser
     usage = """usage: %%prog [options] <%s>
     
 Actions:
+    
+    classify := Detect and identify faces in one or more images.
+    
+    collect := Search for faces in images, and extract as a training sample.
     
     install := Installs the script's executable daemon.
     
@@ -424,36 +440,35 @@ Actions:
     
     stop := Terminates a running daemon.
     
-    collect := Search for faces in images, and extract as a training sample.
-    
     train := Records user images for training the script to recognize the user.
     
-    uninstall := Removes the scripts executable daemon.""" % ('|'.join(ACTIONS),)
+    uninstall := Removes the scripts executable daemon.""" \
+        % ('|'.join(c.ACTIONS),)
     parser = OptionParser(usage=usage, version=__version__)
     
     parser.add_option(
         "--pidfile",
         dest="pidfile",
-        default=DEFAULT_PIDFILE,
-        help="Location of the process identification file storing the " +
-            "process identification number while running as a daemon.")
+        default=c.DEFAULT_PIDFILE,
+        help='''Location of the process identification file storing the
+            process identification number while running as a daemon.''')
     
     parser.add_option(
         "--opencv_dir",
         dest="opencv_dir",
-        default=OPENCV_DIR,
+        default=c.OPENCV_DIR,
         help="Location of OpenCV media directory.")
     
     parser.add_option(
         "--cascade",
         dest="cascade",
-        default=DEFAULT_CASCADE,
+        default=c.DEFAULT_CASCADE,
         help="Name of the cascade file to use in the OpenCV media directory.")
     
     parser.add_option(
         "--images_dir",
         dest="images_dir",
-        default=DEFAULT_IMAGES_DIR,
+        default=c.DEFAULT_IMAGES_DIR,
         help="Directory where training face images are stored.")
     
     parser.add_option(
@@ -471,35 +486,60 @@ Actions:
         "--realtime",
         action="store_true",
         default=False,
-        help="Indicates classification should be performed on a live video feed.")
+        help='''Indicates classification should be performed on
+            a live video feed.''')
+    
+    parser.add_option(
+        "--unknown_threshold",
+        default=c.DEFAULT_UNKNOWN_THRESHOLD,
+        help='''The match distance over which an image will be classified
+            as "unknown".''')
 
     (options, args) = parser.parse_args()
     
     daemon = FaceKey(**options.__dict__)
     
-    action = DEFAULT_ACTION
+    action = c.DEFAULT_ACTION
     if args:
         action = args[0]
-        if action not in ACTIONS:
+        if action not in c.ACTIONS:
             parser.error("Invalid action: %s" % action)
         
-    if action == INSTALL:
+    if action == c.INSTALL:
         todo
-    elif action == RESTART:
+    elif action == c.CLEAN:
+        #shutil.rmtree(os.path.join(c.DEFAULT_IMAGES_DIR, 'probes', '.*'))
+        del_path = os.path.join(c.DEFAULT_IMAGES_DIR, 'probes', '*')
+        del_cmd = 'rm -Rf %s' % (del_path,)
+        #print del_cmd
+        os.system(del_cmd)
+    elif action == c.RESTART:
         daemon.restart()
-    elif action == RUN:
+    elif action == c.RUN:
         daemon.run()
-    elif action == START:
+    elif action == c.START:
         daemon.start()
-    elif action == STOP:
+    elif action == c.STOP:
         daemon.stop()
-    elif action == COLLECT:
+    elif action == c.COLLECT:
         daemon.collect(start_dir=args[1], recurse=not options.no_recurse)
-    elif action == TRAIN:
+    elif action == c.TRAIN:
+        print 'Training...'
         daemon.pyf.train()
-    elif action == UNINSTALL:
+    elif action == c.UNINSTALL:
         todo
-    elif action == CLASSIFY:
-        daemon.classify()
+    elif action == c.CLASSIFY:
+        headers='filename,x,y,width,height,name,dist'.split(',')
+        print>>sys.stdout, ','.join(headers)
+        dw = csv.DictWriter(sys.stdout, headers)
+        for _ in daemon.classify(*args[1:]):
+            name = _.name
+#            print _.dist, daemon.unknown_threshold, _.dist > daemon.unknown_threshold
+            if _.dist > daemon.unknown_threshold:
+                name = c.UNKNOWN
+            dw.writerow(dict(zip(
+                headers,
+                (_.filename, _.x, _.y, _.width, _.height, name, _.dist))))
+            
     sys.exit(0)
     
