@@ -4,7 +4,7 @@
 A simple script to monitor the webcam while the machine is locked, and
 automatically unlock when the user's face is detected.
 """
-VERSION = (0, 1, 0)
+VERSION = (0, 1, 1)
 __version__ = '.'.join(map(str, VERSION))
 
 import atexit
