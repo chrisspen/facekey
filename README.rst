@@ -146,6 +146,6 @@ this may be unusably slow.
 
 At some point I'd like to replace the Python/Numpy Eigenfaces implementation
 with the pure `C++ implementation in OpenCV
-http://docs.opencv.org/modules/contrib/doc/facerec/facerec_tutorial.html#eigenfaces`_.
+<http://docs.opencv.org/modules/contrib/doc/facerec/facerec_tutorial.html#eigenfaces>`_.
 However, as of this authoring, that implementation, and its Python bindings,
 are still incomplete. 
